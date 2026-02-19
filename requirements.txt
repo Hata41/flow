@@ -1,8 +1,0 @@
-jax>=0.5.0
-jaxlib>=0.5.0
-chex>=0.1.89
-equinox>=0.11.11
-optax>=0.2.4
-dm-tree==0.1.9; python_version < "3.13"
-jumanji @ git+https://github.com/instadeepai/jumanji.git@main
-gfnx @ git+https://github.com/d-tiapkin/gfnx.git@main; python_version < "3.13"

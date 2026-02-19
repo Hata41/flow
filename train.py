@@ -2,7 +2,37 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
+import sys
 from typing import Any, NamedTuple
+
+
+def _default_gpu_id_from_env() -> int:
+    raw_value = os.environ.get("FLOW_DEFAULT_GPU_ID")
+    if raw_value is None:
+        return 0
+    try:
+        return int(raw_value)
+    except ValueError:
+        return 0
+
+
+_DEFAULT_GPU_ID = _default_gpu_id_from_env()
+
+
+def _bootstrap_runtime_config() -> tuple[str, int]:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--device", type=str, choices=["cpu", "gpu"], default="cpu")
+    parser.add_argument("--gpu-id", type=int, default=_DEFAULT_GPU_ID)
+    args, _ = parser.parse_known_args(sys.argv[1:])
+
+    if args.device == "gpu":
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_id)
+
+    return args.device, args.gpu_id
+
+
+_BOOTSTRAP_DEVICE, _BOOTSTRAP_GPU_ID = _bootstrap_runtime_config()
 
 import chex
 import equinox as eqx
@@ -58,11 +88,9 @@ def _resolve_device(device_kind: str) -> jax.Device:
         return cpu_devices[0]
 
     gpu_devices = jax.devices("gpu")
-    if len(gpu_devices) <= 1:
-        raise RuntimeError(
-            "GPU device index 1 requested, but fewer than 2 GPU devices are available."
-        )
-    return gpu_devices[1]
+    if not gpu_devices:
+        raise RuntimeError("No GPU device found by JAX.")
+    return gpu_devices[0]
 
 
 def _resolve_tb_loss() -> Any:
@@ -202,9 +230,16 @@ def run_training(
     max_num_ems: int,
     obs_num_ems: int,
     device: str,
+    gpu_id: int,
 ) -> None:
     selected_device = _resolve_device(device)
-    print(f"Using device: {selected_device} (requested={device})")
+    if device == "gpu":
+        print(
+            f"Using device: {selected_device} "
+            f"(requested={device}, CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')}, gpu_id={gpu_id})"
+        )
+    else:
+        print(f"Using device: {selected_device} (requested={device})")
 
     with jax.default_device(selected_device):
         rng = jax.random.PRNGKey(seed)
@@ -264,7 +299,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-num-items", type=int, default=20)
     parser.add_argument("--max-num-ems", type=int, default=40)
     parser.add_argument("--obs-num-ems", type=int, default=40)
-    parser.add_argument("--device", type=str, choices=["cpu", "gpu"], default="cpu")
+    parser.add_argument(
+        "--device",
+        type=str,
+        choices=["cpu", "gpu"],
+        default="cpu",
+        help="Execution device. Use 'gpu' to enable CUDA via JAX.",
+    )
+    parser.add_argument(
+        "--gpu-id",
+        type=int,
+        default=_BOOTSTRAP_GPU_ID,
+        help=(
+            "Physical GPU index to expose via CUDA_VISIBLE_DEVICES. "
+            "Applied before importing jax. Default: FLOW_DEFAULT_GPU_ID or 0."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -281,4 +331,5 @@ if __name__ == "__main__":
         max_num_ems=args.max_num_ems,
         obs_num_ems=args.obs_num_ems,
         device=args.device,
+        gpu_id=args.gpu_id,
     )

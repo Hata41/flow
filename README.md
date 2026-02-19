@@ -107,6 +107,24 @@ Then run:
 python train.py --num-train-steps 10 --num-envs 8 --max-num-items 10 --max-num-ems 30 --obs-num-ems 30
 ```
 
+### GPU selection (`--device gpu`)
+- `train.py` now sets `CUDA_VISIBLE_DEVICES` **before importing `jax`**.
+- Use `--gpu-id` to choose the physical GPU index to expose to the process.
+- Default GPU index is `FLOW_DEFAULT_GPU_ID` (if set), otherwise `0`.
+- Example (use physical GPU 1 only):
+
+```bash
+python train.py --device gpu --gpu-id 1 --num-train-steps 10 --num-envs 8 --max-num-items 10 --max-num-ems 30 --obs-num-ems 30
+```
+
+- Example with env default (equivalent to passing `--gpu-id 1`):
+
+```bash
+FLOW_DEFAULT_GPU_ID=1 python train.py --device gpu --num-train-steps 10 --num-envs 8 --max-num-items 10 --max-num-ems 30 --obs-num-ems 30
+```
+
+- Inside JAX, the selected visible GPU appears as `cuda:0` (expected after masking).
+
 ## Current Simplifications / Assumptions
 1. **Backward policy is fixed deterministic LIFO**
    - one backward action only (undo-last).
