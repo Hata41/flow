@@ -44,7 +44,7 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from env_wrapper import BinPackEnvParams, BinPackGFN
+from env_wrapper import BinPackEnvParams, BinPackGFN, GFNBinPackState
 
 
 class TransformerBlock(eqx.Module):
@@ -328,6 +328,24 @@ def _save_checkpoint(path: Path, model: Any, logZ: chex.Array) -> None:
     eqx.tree_serialise_leaves(path.as_posix(), checkpoint_payload)
 
 
+def _supports_color_output() -> bool:
+    return sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+
+
+def _colorize(text: str, color_code: str) -> str:
+    if not _supports_color_output():
+        return text
+    return f"\033[{color_code}m{text}\033[0m"
+
+
+def _format_train_log(message: str) -> str:
+    return _colorize(f"[train] {message}", "96")
+
+
+def _format_eval_log(message: str) -> str:
+    return _colorize(f"[eval]  {message}", "95")
+
+
 def _resolve_device(device_kind: str) -> Any:
     if device_kind == "cpu":
         cpu_devices = jax.devices("cpu")
@@ -365,6 +383,28 @@ def trajectory_balance_loss(
     return loss, metrics
 
 
+def make_fwd_policy_fn(policy_static: Any, backward_action_dim: int):
+    def fwd_policy_fn(
+        fwd_rng_key: chex.PRNGKey,
+        env_obs: chex.Array,
+        policy_params: Any,
+    ) -> tuple[chex.Array, dict[str, chex.Array]]:
+        del fwd_rng_key
+        model = eqx.combine(policy_params, policy_static)
+        logits, _ = jax.vmap(model)(env_obs)
+        backward_logits = jnp.zeros((logits.shape[0], backward_action_dim), dtype=logits.dtype)
+        return logits, {
+            "forward_logits": logits,
+            "backward_logits": backward_logits,
+        }
+
+    return fwd_policy_fn
+
+
+def action_history_hamming_distance(lhs_state: GFNBinPackState, rhs_state: GFNBinPackState) -> chex.Array:
+    return jnp.mean(lhs_state.action_history != rhs_state.action_history)
+
+
 def make_train_step():
     @eqx.filter_jit
     def train_step(train_state: TrainState) -> tuple[TrainState, dict[str, chex.Array]]:
@@ -376,20 +416,7 @@ def make_train_step():
         )
 
         policy_params, policy_static = eqx.partition(train_state.model, eqx.is_array)
-
-        def fwd_policy_fn(
-            fwd_rng_key: chex.PRNGKey,
-            env_obs: chex.Array,
-            current_policy_params: Any,
-        ) -> tuple[chex.Array, dict[str, chex.Array]]:
-            del fwd_rng_key
-            model = eqx.combine(current_policy_params, policy_static)
-            logits, _ = jax.vmap(model)(env_obs)
-            backward_logits = jnp.zeros((logits.shape[0], train_state.env.backward_action_space.n))
-            return logits, {
-                "forward_logits": logits,
-                "backward_logits": backward_logits,
-            }
+        fwd_policy_fn = make_fwd_policy_fn(policy_static, train_state.env.backward_action_space.n)
 
         traj_data, rollout_info = gfnx.utils.forward_rollout(
             rng_key=rollout_key,
@@ -487,6 +514,9 @@ def run_training(
         "mean_log_pf",
         "mean_log_pb",
         "logZ",
+        "top_10_reward",
+        "top_10_diversity",
+        "top_10_utilization",
     ]
 
     selected_device = _resolve_device(device)
@@ -509,7 +539,7 @@ def run_training(
             beta=beta,
             dense_reward=False,
         )
-        rng, env_init_key, net_init_key = jax.random.split(rng, 3)
+        rng, env_init_key, net_init_key, eval_init_key = jax.random.split(rng, 4)
         env_params = env.init(env_init_key)
 
         obs_dim = env.observation_space["shape"][0]
@@ -539,6 +569,34 @@ def run_training(
         )
 
         train_step = make_train_step()
+        _, eval_policy_static = eqx.partition(model, eqx.is_array)
+        eval_fwd_policy_fn = make_fwd_policy_fn(eval_policy_static, env.backward_action_space.n)
+        metrics_module = gfnx.metrics.TopKMetricsModule(
+            env=env,
+            fwd_policy_fn=eval_fwd_policy_fn,
+            num_traj=512,
+            batch_size=128,
+            top_k=[10, 50],
+            distance_fn=action_history_hamming_distance,
+        )
+        metrics_state = metrics_module.init(eval_init_key, metrics_module.InitArgs())
+
+        @jax.jit
+        def eval_policy_metrics(
+            current_metrics_state: Any,
+            rng_key: chex.PRNGKey,
+            current_policy_params: Any,
+            current_env_params: BinPackEnvParams,
+        ) -> tuple[Any, dict[str, chex.Array]]:
+            next_metrics_state = metrics_module.process(
+                current_metrics_state,
+                rng_key,
+                metrics_module.ProcessArgs(
+                    policy_params=current_policy_params,
+                    env_params=current_env_params,
+                ),
+            )
+            return next_metrics_state, metrics_module.get(next_metrics_state)
 
         with metrics_path.open("w", newline="", encoding="utf-8") as metrics_file:
             writer = csv.DictWriter(metrics_file, fieldnames=metric_fieldnames)
@@ -546,6 +604,27 @@ def run_training(
 
             for step in range(num_train_steps):
                 train_state, metrics = train_step(train_state)
+
+                top_10_reward: float | None = None
+                top_10_diversity: float | None = None
+                top_10_utilization: float | None = None
+                should_log = (step % log_every == 0) or (step == num_train_steps - 1)
+                if should_log:
+                    eval_rng_key, next_rng_key = jax.random.split(train_state.rng_key)
+                    train_state = train_state._replace(rng_key=next_rng_key)
+                    current_policy_params, _ = eqx.partition(train_state.model, eqx.is_array)
+                    metrics_state, eval_results = eval_policy_metrics(
+                        metrics_state,
+                        eval_rng_key,
+                        current_policy_params,
+                        train_state.env_params,
+                    )
+                    top_10_reward = float(eval_results["top_10_reward"])
+                    top_10_diversity = float(eval_results["top_10_diversity"])
+                    top_10_utilization = float(
+                        jnp.log(jnp.maximum(eval_results["top_10_reward"], 1e-12))
+                        / train_state.env_params.reward_params.beta
+                    )
 
                 row = {
                     "step": step,
@@ -555,17 +634,29 @@ def run_training(
                     "mean_log_pf": float(metrics["mean_log_pf"]),
                     "mean_log_pb": float(metrics["mean_log_pb"]),
                     "logZ": float(train_state.logZ),
+                    "top_10_reward": top_10_reward,
+                    "top_10_diversity": top_10_diversity,
+                    "top_10_utilization": top_10_utilization,
                 }
                 writer.writerow({key: _json_safe_value(value) for key, value in row.items()})
 
-                if step % log_every == 0 or step == num_train_steps - 1:
-                    print(
+                if should_log:
+                    train_message = (
                         f"step={step:05d} "
                         f"loss={row['loss']:.6f} "
                         f"mean_utilization={row['mean_utilization']:.6f} "
                         f"mean_terminal_log_reward={row['mean_terminal_log_reward']:.6f} "
                         f"logZ={row['logZ']:.6f}"
                     )
+                    print(_format_train_log(train_message))
+                    if top_10_reward is not None and top_10_diversity is not None:
+                        eval_message = (
+                            f"step={step:05d} "
+                            f"top_10_reward={top_10_reward:.6f} "
+                            f"top_10_diversity={top_10_diversity:.6f} "
+                            f"top_10_utilization={top_10_utilization:.6f}"
+                        )
+                        print(_format_eval_log(eval_message))
 
                 should_checkpoint = ((step + 1) % checkpoint_every == 0) or (step == num_train_steps - 1)
                 if should_checkpoint:
