@@ -78,8 +78,8 @@ class BinPackGFN(BaseVecEnvironment[GFNBinPackState, BinPackEnvParams]):
         self.max_num_items = max_num_items
         self.max_num_ems = max_num_ems
         self.obs_num_ems = obs_num_ems
-        self._obs_dim = 7 * obs_num_ems + 5 * max_num_items
         self._n_actions = obs_num_ems * max_num_items
+        self._obs_dim = 7 * obs_num_ems + 5 * max_num_items + self._n_actions
         self._action_space = DiscreteSpace(n=self._n_actions)
         self._backward_action_space = DiscreteSpace(n=1)
         self._observation_space: Dict[str, Any] = {"shape": (self._obs_dim,), "dtype": jnp.float32}
@@ -202,6 +202,7 @@ class BinPackGFN(BaseVecEnvironment[GFNBinPackState, BinPackEnvParams]):
                 item_feats.reshape(-1),
                 jstate.items_mask.astype(jnp.float32),
                 jstate.items_placed.astype(jnp.float32),
+                jstate.action_mask[: self.obs_num_ems].astype(jnp.float32).reshape(-1),
             ],
             axis=0,
         )
