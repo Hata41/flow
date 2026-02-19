@@ -44,6 +44,14 @@ coverage.xml
 *.cover
 *.py,cover
 
+# Training / evaluation artifacts
+runs/
+*.eqx
+metrics.csv
+config.json
+latest.json
+eval-*.json
+
 # Jupyter
 .ipynb_checkpoints/
 

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import os
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, NamedTuple
 
 
@@ -293,7 +297,38 @@ class TrainState(NamedTuple):
     num_envs: int
 
 
-def _resolve_device(device_kind: str) -> jax.Device:
+def _json_safe_value(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_value(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe_value(v) for k, v in value.items()}
+    return str(value)
+
+
+def _create_run_dir(output_dir: str, run_name: str | None, seed: int) -> Path:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    resolved_run_name = run_name or f"run-{timestamp}-seed{seed}"
+    run_dir = Path(output_dir) / resolved_run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
+def _save_checkpoint(path: Path, model: Any, logZ: chex.Array) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_payload = (model, jnp.asarray(logZ, dtype=jnp.float32))
+    eqx.tree_serialise_leaves(path.as_posix(), checkpoint_payload)
+
+
+def _resolve_device(device_kind: str) -> Any:
     if device_kind == "cpu":
         cpu_devices = jax.devices("cpu")
         if not cpu_devices:
@@ -414,7 +449,46 @@ def run_training(
     obs_num_ems: int,
     device: str,
     gpu_id: int,
+    output_dir: str,
+    run_name: str | None,
+    checkpoint_every: int,
+    log_every: int,
 ) -> None:
+    run_dir = _create_run_dir(output_dir=output_dir, run_name=run_name, seed=seed)
+    checkpoints_dir = run_dir / "checkpoints"
+    metrics_path = run_dir / "metrics.csv"
+    config_path = run_dir / "config.json"
+
+    run_config = {
+        "seed": seed,
+        "num_train_steps": num_train_steps,
+        "num_envs": num_envs,
+        "learning_rate": learning_rate,
+        "hidden_dim": hidden_dim,
+        "beta": beta,
+        "max_num_items": max_num_items,
+        "max_num_ems": max_num_ems,
+        "obs_num_ems": obs_num_ems,
+        "device": device,
+        "gpu_id": gpu_id,
+        "output_dir": output_dir,
+        "run_name": run_dir.name,
+        "checkpoint_every": checkpoint_every,
+        "log_every": log_every,
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    _write_json(config_path, run_config)
+
+    metric_fieldnames = [
+        "step",
+        "loss",
+        "mean_utilization",
+        "mean_terminal_log_reward",
+        "mean_log_pf",
+        "mean_log_pb",
+        "logZ",
+    ]
+
     selected_device = _resolve_device(device)
     if device == "gpu":
         print(
@@ -423,6 +497,7 @@ def run_training(
         )
     else:
         print(f"Using device: {selected_device} (requested={device})")
+    print(f"Artifacts directory: {run_dir}")
 
     with jax.default_device(selected_device):
         rng = jax.random.PRNGKey(seed)
@@ -465,16 +540,47 @@ def run_training(
 
         train_step = make_train_step()
 
-        for step in range(num_train_steps):
-            train_state, metrics = train_step(train_state)
-            if step % 50 == 0 or step == num_train_steps - 1:
-                print(
-                    f"step={step:05d} "
-                    f"loss={float(metrics['loss']):.6f} "
-                    f"mean_utilization={float(metrics['mean_utilization']):.6f} "
-                    f"mean_terminal_log_reward={float(metrics['mean_terminal_log_reward']):.6f} "
-                    f"logZ={float(train_state.logZ):.6f}"
-                )
+        with metrics_path.open("w", newline="", encoding="utf-8") as metrics_file:
+            writer = csv.DictWriter(metrics_file, fieldnames=metric_fieldnames)
+            writer.writeheader()
+
+            for step in range(num_train_steps):
+                train_state, metrics = train_step(train_state)
+
+                row = {
+                    "step": step,
+                    "loss": float(metrics["loss"]),
+                    "mean_utilization": float(metrics["mean_utilization"]),
+                    "mean_terminal_log_reward": float(metrics["mean_terminal_log_reward"]),
+                    "mean_log_pf": float(metrics["mean_log_pf"]),
+                    "mean_log_pb": float(metrics["mean_log_pb"]),
+                    "logZ": float(train_state.logZ),
+                }
+                writer.writerow({key: _json_safe_value(value) for key, value in row.items()})
+
+                if step % log_every == 0 or step == num_train_steps - 1:
+                    print(
+                        f"step={step:05d} "
+                        f"loss={row['loss']:.6f} "
+                        f"mean_utilization={row['mean_utilization']:.6f} "
+                        f"mean_terminal_log_reward={row['mean_terminal_log_reward']:.6f} "
+                        f"logZ={row['logZ']:.6f}"
+                    )
+
+                should_checkpoint = ((step + 1) % checkpoint_every == 0) or (step == num_train_steps - 1)
+                if should_checkpoint:
+                    ckpt_name = f"step_{step + 1:06d}.eqx"
+                    ckpt_path = checkpoints_dir / ckpt_name
+                    _save_checkpoint(ckpt_path, train_state.model, train_state.logZ)
+                    _save_checkpoint(checkpoints_dir / "latest.eqx", train_state.model, train_state.logZ)
+                    _write_json(
+                        checkpoints_dir / "latest.json",
+                        {
+                            "step": step + 1,
+                            "logZ": float(train_state.logZ),
+                            "checkpoint": ckpt_name,
+                        },
+                    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -488,6 +594,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-num-items", type=int, default=20)
     parser.add_argument("--max-num-ems", type=int, default=40)
     parser.add_argument("--obs-num-ems", type=int, default=40)
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="runs",
+        help="Directory where run artifacts (config/metrics/checkpoints) are saved.",
+    )
+    parser.add_argument(
+        "--run-name",
+        type=str,
+        default=None,
+        help="Optional run name. Defaults to timestamped name when omitted.",
+    )
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=200,
+        help="Save checkpoints every N train steps and at final step.",
+    )
+    parser.add_argument(
+        "--log-every",
+        type=int,
+        default=50,
+        help="Print training metrics every N train steps.",
+    )
     parser.add_argument(
         "--device",
         type=str,
@@ -509,6 +639,10 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
+    if args.checkpoint_every <= 0:
+        raise ValueError("--checkpoint-every must be > 0")
+    if args.log_every <= 0:
+        raise ValueError("--log-every must be > 0")
     run_training(
         seed=args.seed,
         num_train_steps=args.num_train_steps,
@@ -521,4 +655,8 @@ if __name__ == "__main__":
         obs_num_ems=args.obs_num_ems,
         device=args.device,
         gpu_id=args.gpu_id,
+        output_dir=args.output_dir,
+        run_name=args.run_name,
+        checkpoint_every=args.checkpoint_every,
+        log_every=args.log_every,
     )

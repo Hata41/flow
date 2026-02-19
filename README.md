@@ -69,13 +69,17 @@ Implemented `BinPackGFN`, a `gfnx.base.BaseVecEnvironment` wrapper around Jumanj
      - `log R(x) = beta * utilization`.
 
 ### Training Script (`train.py`)
-Implemented a minimal training pipeline:
-- Equinox MLP policy over flattened observations.
+Implemented a training pipeline with artifact tracking:
+- Equinox transformer policy with EMS/item self-attention + cross-attention.
 - Forward rollout through `gfnx.utils.forward_rollout`.
 - TB-style optimization path using canonical trajectory probability utilities:
    - `gfnx.utils.forward_rollout`
    - `gfnx.utils.forward_trajectory_log_probs`
 - `optax` optimizer and train loop with periodic metric printing.
+- Local experiment artifacts per run:
+   - `config.json` (config snapshot),
+   - `metrics.csv` (training curves),
+   - `checkpoints/step_*.eqx` + `checkpoints/latest.eqx` (model + `logZ`).
 
 ## Runtime / Environment Notes
 
@@ -107,6 +111,14 @@ Then run:
 python train.py --num-train-steps 10 --num-envs 8 --max-num-items 10 --max-num-ems 30 --obs-num-ems 30
 ```
 
+Training artifacts are saved under `runs/<run-name>/` by default.
+
+Useful options:
+
+```bash
+python train.py --num-train-steps 1000 --checkpoint-every 200 --log-every 50 --output-dir runs --run-name exp-001
+```
+
 ### GPU selection (`--device gpu`)
 - `train.py` now sets `CUDA_VISIBLE_DEVICES` **before importing `jax`**.
 - Use `--gpu-id` to choose the physical GPU index to expose to the process.
@@ -129,23 +141,24 @@ FLOW_DEFAULT_GPU_ID=1 python train.py --device gpu --num-train-steps 10 --num-en
 1. **Backward policy is fixed deterministic LIFO**
    - one backward action only (undo-last).
 2. **Observation encoder is pure flatten+MLP**
-   - no permutation-equivariant/set encoder yet.
+   - now replaced by a lightweight structure-aware transformer; still no advanced set-equivariant pretraining or specialized geometric encoder.
 3. **Reward is utilization-only**
    - no extra penalties (e.g., stability, support, compactness).
 4. **Training script is minimal**
-   - no replay buffer, no checkpointing, no rich logging backend.
+   - no replay buffer and no external tracking backend (e.g., W&B/MLflow), but local checkpointing + CSV logging are implemented.
 5. **Backward policy logits are fixed in training rollout info**
    - backward logits are currently deterministic for the LIFO backward action space.
 
 ## TODOs
 
 ### Medium-priority
-1. **Improve policy architecture**
-   - replace plain MLP with structure-aware encoder (EMS-item interaction model / attention).
-2. **Add checkpointing and experiment logging**
-   - save model/logZ, training curves, config snapshot.
-3. **Add evaluation script**
-   - collect utilization statistics and top-k packing samples.
+All medium-priority TODOs are implemented:
+1. ✅ **Policy architecture improved**
+   - replaced plain MLP by structure-aware transformer with EMS/item interactions.
+2. ✅ **Checkpointing and experiment logging**
+   - model + `logZ` checkpoints, `metrics.csv`, and `config.json` snapshot.
+3. ✅ **Evaluation script added**
+   - `evaluate.py` collects utilization statistics and top-k samples (by utilization) with action histories.
 
 ### Optional extensions
 4. **Alternative rewards / curriculum**
@@ -156,7 +169,18 @@ FLOW_DEFAULT_GPU_ID=1 python train.py --device gpu --num-train-steps 10 --num-en
 ## Quick Status
 - Wrapper implemented and executable.
 - Short smoke training run has been verified in this workspace.
-- Remaining work is mostly model/experimentation features rather than core algorithmic wiring.
+- Medium-priority implementation work is completed.
+- Remaining work is in optional experimentation extensions.
+
+## Evaluation
+- Added [evaluate.py](evaluate.py) to evaluate saved checkpoints.
+- It loads run config + checkpoint, runs forward rollouts, computes utilization summary stats, and exports top-k samples.
+
+Example:
+
+```bash
+python evaluate.py --run-dir runs/exp-001 --num-eval-batches 10 --num-eval-envs 128 --top-k 10
+```
 
 ## Regression Tests
 - Added [tests/test_reset_key_rotation.py](tests/test_reset_key_rotation.py) to protect against frozen-seed regressions.
