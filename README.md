@@ -72,9 +72,9 @@ Implemented `BinPackGFN`, a `gfnx.base.BaseVecEnvironment` wrapper around Jumanj
 Implemented a minimal training pipeline:
 - Equinox MLP policy over flattened observations.
 - Forward rollout through `gfnx.utils.forward_rollout`.
-- TB-style optimization path with:
-  - dynamic resolver for gfnx TB loss (if available),
-  - fallback manual TB-like loss (`logZ + sum(log P_F) - log R`)² over sampled trajectories.
+- TB-style optimization path using canonical trajectory probability utilities:
+   - `gfnx.utils.forward_rollout`
+   - `gfnx.utils.forward_trajectory_log_probs`
 - `optax` optimizer and train loop with periodic metric printing.
 
 ## Runtime / Environment Notes
@@ -134,50 +134,41 @@ FLOW_DEFAULT_GPU_ID=1 python train.py --device gpu --num-train-steps 10 --num-en
    - no extra penalties (e.g., stability, support, compactness).
 4. **Training script is minimal**
    - no replay buffer, no checkpointing, no rich logging backend.
-5. **TB loss integration fallback**
-   - uses manual TB-like objective when direct `TrajectoryBalance` API is unavailable/unstable due version drift.
+5. **Backward policy logits are fixed in training rollout info**
+   - backward logits are currently deterministic for the LIFO backward action space.
 
 ## TODOs
 
-### High-priority
-1. **Stabilize dependency lock for reproducibility**
-   - either:
-     - standardize on Python 3.12 and fully solvable lockfile, or
-     - vendor/fork-compatible `gfnx` constraints for Python 3.13.
-2. **Pin and verify exact gfnx TB API**
-   - remove dynamic import fallback and call canonical TB loss directly.
-3. **Add unit tests for wrapper invariants**
-   - flatten/unflatten bijection,
-   - forward mask inversion,
-   - backward deterministic validity mask,
-   - backward re-simulation consistency.
-
 ### Medium-priority
-4. **Improve policy architecture**
+1. **Improve policy architecture**
    - replace plain MLP with structure-aware encoder (EMS-item interaction model / attention).
-5. **Add checkpointing and experiment logging**
+2. **Add checkpointing and experiment logging**
    - save model/logZ, training curves, config snapshot.
-6. **Add evaluation script**
+3. **Add evaluation script**
    - collect utilization statistics and top-k packing samples.
 
 ### Optional extensions
-7. **Alternative rewards / curriculum**
+4. **Alternative rewards / curriculum**
    - reward shaping schedules and harder item distributions.
-8. **Ablations**
+5. **Ablations**
    - deterministic PB vs learned PB, dense vs sparse reward, observation variants.
 
 ## Quick Status
 - Wrapper implemented and executable.
 - Short smoke training run has been verified in this workspace.
-- Main remaining blocker is dependency reproducibility across environments, not core algorithmic wiring.
+- Remaining work is mostly model/experimentation features rather than core algorithmic wiring.
 
 ## Regression Tests
 - Added [tests/test_reset_key_rotation.py](tests/test_reset_key_rotation.py) to protect against frozen-seed regressions.
 - Covered checks:
-   - `env_params.reset_key` rotates across JITted train steps.
    - different reset keys produce different initial observations.
+- Added [tests/integration_reset_key_rotation.py](tests/integration_reset_key_rotation.py) for the compile-heavy train-step check:
+   - `env_params.reset_key` rotates across JITted train steps.
+- Added [tests/test_wrapper_invariants.py](tests/test_wrapper_invariants.py) for wrapper API invariants.
 - Run with:
 
 ```bash
 python -m unittest tests/test_reset_key_rotation.py -v
+python -m unittest tests/test_wrapper_invariants.py -v
+python -m unittest tests/integration_reset_key_rotation.py -v
 ```

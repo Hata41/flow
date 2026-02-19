@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 import os
 import sys
 from typing import Any, NamedTuple
@@ -307,67 +306,31 @@ def _resolve_device(device_kind: str) -> jax.Device:
     return gpu_devices[0]
 
 
-def _resolve_tb_loss() -> Any:
-    candidates = [
-        ("gfnx.losses.trajectory_balance", "TrajectoryBalance"),
-        ("gfnx.losses.tb", "TrajectoryBalance"),
-        ("gfnx.loss.trajectory_balance", "TrajectoryBalance"),
-    ]
-    for module_name, symbol_name in candidates:
-        try:
-            module = importlib.import_module(module_name)
-            if hasattr(module, symbol_name):
-                return getattr(module, symbol_name)()
-        except Exception:
-            continue
-    return None
-
-
-def manual_tb_loss(
+def trajectory_balance_loss(
     model: Any,
     logZ: chex.Array,
     traj_data: gfnx.utils.TrajectoryData,
+    rollout_info: dict[str, chex.Array],
     env: BinPackGFN,
     env_params: BinPackEnvParams,
 ) -> tuple[chex.Array, dict[str, chex.Array]]:
-    obs = traj_data.obs
-    actions = traj_data.action
-    done = traj_data.done
-    pad = traj_data.pad
-    states = traj_data.state
+    del model
+    log_pf_traj, log_pb_traj = gfnx.utils.forward_trajectory_log_probs(env, traj_data, env_params)
+    terminal_log_reward = rollout_info["log_gfn_reward"]
 
-    batch_size, traj_len = actions.shape
-    flat_obs = obs.reshape((batch_size * traj_len, -1))
-    flat_states = jax.tree.map(
-        lambda x: x.reshape((batch_size * traj_len,) + tuple(x.shape[2:])),
-        states,
-    )
-
-    logits, _ = jax.vmap(model)(flat_obs)
-    invalid_mask = env.get_invalid_mask(flat_states, env_params)
-    masked_logits = gfnx.utils.mask_logits(logits, invalid_mask)
-    log_pf_all = jax.nn.log_softmax(masked_logits, axis=-1)
-
-    flat_actions = actions.reshape((-1, 1))
-    log_pf_taken = jnp.take_along_axis(log_pf_all, flat_actions, axis=-1).squeeze(-1)
-    log_pf_taken = log_pf_taken.reshape((batch_size, traj_len))
-
-    valid_steps = jnp.logical_not(pad)
-    log_pf_sum = jnp.sum(jnp.where(valid_steps, log_pf_taken, 0.0), axis=1)
-    terminal_log_reward = jnp.sum(jnp.where(done, traj_data.log_gfn_reward, 0.0), axis=1)
-
-    residual = logZ + log_pf_sum - terminal_log_reward
+    residual = logZ + log_pf_traj - log_pb_traj - terminal_log_reward
     loss = jnp.mean(residual**2)
     metrics = {
         "loss": loss,
         "mean_terminal_log_reward": jnp.mean(terminal_log_reward),
-        "mean_log_pf": jnp.mean(log_pf_sum),
+        "mean_log_pf": jnp.mean(log_pf_traj),
+        "mean_log_pb": jnp.mean(log_pb_traj),
         "mean_utilization": jnp.mean(terminal_log_reward / env_params.reward_params.beta),
     }
     return loss, metrics
 
 
-def make_train_step(tb_loss_module: Any):
+def make_train_step():
     @eqx.filter_jit
     def train_step(train_state: TrainState) -> tuple[TrainState, dict[str, chex.Array]]:
         rng_key, rollout_key, new_env_key = jax.random.split(train_state.rng_key, 3)
@@ -387,9 +350,13 @@ def make_train_step(tb_loss_module: Any):
             del fwd_rng_key
             model = eqx.combine(current_policy_params, policy_static)
             logits, _ = jax.vmap(model)(env_obs)
-            return logits, {}
+            backward_logits = jnp.zeros((logits.shape[0], train_state.env.backward_action_space.n))
+            return logits, {
+                "forward_logits": logits,
+                "backward_logits": backward_logits,
+            }
 
-        traj_data, _ = gfnx.utils.forward_rollout(
+        traj_data, rollout_info = gfnx.utils.forward_rollout(
             rng_key=rollout_key,
             num_envs=train_state.num_envs,
             policy_fn=fwd_policy_fn,
@@ -403,12 +370,14 @@ def make_train_step(tb_loss_module: Any):
         ) -> tuple[chex.Array, dict[str, chex.Array]]:
             model_params, logZ = params
             model = eqx.combine(model_params, policy_static)
-            if tb_loss_module is not None and hasattr(tb_loss_module, "loss"):
-                try:
-                    return tb_loss_module.loss(model, logZ, traj_data, train_state.env, rollout_env_params)
-                except Exception:
-                    pass
-            return manual_tb_loss(model, logZ, traj_data, train_state.env, rollout_env_params)
+            return trajectory_balance_loss(
+                model,
+                logZ,
+                traj_data,
+                rollout_info,
+                train_state.env,
+                rollout_env_params,
+            )
 
         params = (policy_params, train_state.logZ)
         (loss, metrics), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(params)
@@ -494,8 +463,7 @@ def run_training(
             num_envs=num_envs,
         )
 
-        tb_loss_module = _resolve_tb_loss()
-        train_step = make_train_step(tb_loss_module)
+        train_step = make_train_step()
 
         for step in range(num_train_steps):
             train_state, metrics = train_step(train_state)

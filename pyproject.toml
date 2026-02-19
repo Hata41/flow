@@ -9,13 +9,14 @@ description = "3D Bin Packing with Jumanji + gfnx (Trajectory Balance)"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-  "jax[cuda12]>=0.5.0",
-  "chex>=0.1.89",
-  "equinox>=0.11.11",
-  "optax>=0.2.4",
+  "jax[cuda12]==0.7.1",
+  "numpy==1.26.4",
+  "chex==0.1.91",
+  "equinox==0.13.0",
+  "optax==0.2.7",
   "dm-tree==0.1.9",
-  "jumanji @ git+https://github.com/instadeepai/jumanji.git@main",
-  "gfnx @ git+https://github.com/d-tiapkin/gfnx.git@main",
+  "jumanji @ git+https://github.com/instadeepai/jumanji.git@9d335e443433f8f76bb7bd0b7387fef9ffe8a61e",
+  "gfnx @ git+https://github.com/d-tiapkin/gfnx.git@4bbd26ae22437a218e69214a917eb039d1c529f4",
   "nvitop",
 ]
 
