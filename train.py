@@ -50,6 +50,21 @@ class TrainState(NamedTuple):
     num_envs: int
 
 
+def _resolve_device(device_kind: str) -> jax.Device:
+    if device_kind == "cpu":
+        cpu_devices = jax.devices("cpu")
+        if not cpu_devices:
+            raise RuntimeError("No CPU device found by JAX.")
+        return cpu_devices[0]
+
+    gpu_devices = jax.devices("gpu")
+    if len(gpu_devices) <= 1:
+        raise RuntimeError(
+            "GPU device index 1 requested, but fewer than 2 GPU devices are available."
+        )
+    return gpu_devices[1]
+
+
 def _resolve_tb_loss() -> Any:
     candidates = [
         ("gfnx.losses.trajectory_balance", "TrajectoryBalance"),
@@ -186,51 +201,56 @@ def run_training(
     max_num_items: int,
     max_num_ems: int,
     obs_num_ems: int,
+    device: str,
 ) -> None:
-    rng = jax.random.PRNGKey(seed)
+    selected_device = _resolve_device(device)
+    print(f"Using device: {selected_device} (requested={device})")
 
-    env = BinPackGFN(
-        max_num_items=max_num_items,
-        max_num_ems=max_num_ems,
-        obs_num_ems=obs_num_ems,
-        beta=beta,
-        dense_reward=False,
-    )
-    rng, env_init_key, net_init_key = jax.random.split(rng, 3)
-    env_params = env.init(env_init_key)
+    with jax.default_device(selected_device):
+        rng = jax.random.PRNGKey(seed)
 
-    obs_dim = env.observation_space["shape"][0]
-    n_actions = env.action_space.n
-    model = PolicyMLP(obs_dim=obs_dim, num_actions=n_actions, hidden_dim=hidden_dim, key=net_init_key)
+        env = BinPackGFN(
+            max_num_items=max_num_items,
+            max_num_ems=max_num_ems,
+            obs_num_ems=obs_num_ems,
+            beta=beta,
+            dense_reward=False,
+        )
+        rng, env_init_key, net_init_key = jax.random.split(rng, 3)
+        env_params = env.init(env_init_key)
 
-    optimizer = optax.adam(learning_rate)
-    params = (eqx.filter(model, eqx.is_array), jnp.asarray(0.0, dtype=jnp.float32))
-    opt_state = optimizer.init(params)
+        obs_dim = env.observation_space["shape"][0]
+        n_actions = env.action_space.n
+        model = PolicyMLP(obs_dim=obs_dim, num_actions=n_actions, hidden_dim=hidden_dim, key=net_init_key)
 
-    train_state = TrainState(
-        rng_key=rng,
-        env=env,
-        env_params=env_params,
-        model=model,
-        optimizer=optimizer,
-        opt_state=opt_state,
-        logZ=jnp.asarray(0.0, dtype=jnp.float32),
-        num_envs=num_envs,
-    )
+        optimizer = optax.adam(learning_rate)
+        params = (eqx.filter(model, eqx.is_array), jnp.asarray(0.0, dtype=jnp.float32))
+        opt_state = optimizer.init(params)
 
-    tb_loss_module = _resolve_tb_loss()
-    train_step = make_train_step(tb_loss_module)
+        train_state = TrainState(
+            rng_key=rng,
+            env=env,
+            env_params=env_params,
+            model=model,
+            optimizer=optimizer,
+            opt_state=opt_state,
+            logZ=jnp.asarray(0.0, dtype=jnp.float32),
+            num_envs=num_envs,
+        )
 
-    for step in range(num_train_steps):
-        train_state, metrics = train_step(train_state)
-        if step % 50 == 0 or step == num_train_steps - 1:
-            print(
-                f"step={step:05d} "
-                f"loss={float(metrics['loss']):.6f} "
-                f"mean_utilization={float(metrics['mean_utilization']):.6f} "
-                f"mean_terminal_log_reward={float(metrics['mean_terminal_log_reward']):.6f} "
-                f"logZ={float(train_state.logZ):.6f}"
-            )
+        tb_loss_module = _resolve_tb_loss()
+        train_step = make_train_step(tb_loss_module)
+
+        for step in range(num_train_steps):
+            train_state, metrics = train_step(train_state)
+            if step % 50 == 0 or step == num_train_steps - 1:
+                print(
+                    f"step={step:05d} "
+                    f"loss={float(metrics['loss']):.6f} "
+                    f"mean_utilization={float(metrics['mean_utilization']):.6f} "
+                    f"mean_terminal_log_reward={float(metrics['mean_terminal_log_reward']):.6f} "
+                    f"logZ={float(train_state.logZ):.6f}"
+                )
 
 
 def parse_args() -> argparse.Namespace:
@@ -244,6 +264,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-num-items", type=int, default=20)
     parser.add_argument("--max-num-ems", type=int, default=40)
     parser.add_argument("--obs-num-ems", type=int, default=40)
+    parser.add_argument("--device", type=str, choices=["cpu", "gpu"], default="cpu")
     return parser.parse_args()
 
 
@@ -259,4 +280,5 @@ if __name__ == "__main__":
         max_num_items=args.max_num_items,
         max_num_ems=args.max_num_ems,
         obs_num_ems=args.obs_num_ems,
+        device=args.device,
     )

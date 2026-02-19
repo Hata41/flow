@@ -80,17 +80,21 @@ Implemented a minimal training pipeline:
 ## Runtime / Environment Notes
 
 ### Current Python Environment
-This workspace currently uses Python 3.13 in `.venv`.
+Use Python 3.11 or 3.12 (Python 3.13 is not supported for this dependency set).
 
 ### Important dependency caveat
-A strict `uv pip install -r requirements.txt` can fail due upstream dependency metadata conflicts between:
-- `gfnx` transitive constraints (notably older `numpy`), and
-- packages required by recent JAX/Jumanji on Python 3.13.
+Python 3.13 is currently unsatisfiable here due upstream dependency constraints between:
+- `gfnx` transitive constraints (notably `numpy==1.26.4`), and
+- `dm-tree` on Python 3.13 (`numpy>=2.1.0`).
+
+Use Python 3.11/3.12 for reproducible installs.
 
 ### Installation sequence that worked in this workspace
-The following sequence was used successfully to run training:
+The following sequence is reproducible with Python 3.12:
 
 ```bash
+uv python install 3.12
+uv venv --python 3.12
 source .venv/bin/activate
 uv pip install --index-strategy unsafe-best-match git+https://github.com/instadeepai/jumanji.git@main
 uv pip install --index-strategy unsafe-best-match --no-deps git+https://github.com/d-tiapkin/gfnx.git@main
