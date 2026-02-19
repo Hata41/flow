@@ -1,0 +1,64 @@
+runtime:
+  device: cpu
+  gpu_id: 0
+  default_gpu_env_fallback: 0
+  train_log_color_code: 96
+  eval_log_color_code: 95
+  json_indent: 2
+
+env:
+  beta: 10.0
+  max_num_items: 20
+  max_num_ems: 40
+  obs_num_ems: 40
+  dense_reward: false
+
+model:
+  hidden_dim: 32
+  num_layers: 2
+  num_heads: 4
+  ff_multiplier: 2
+  qk_size_min: 1
+  obs_ems_feature_factor: 7
+  obs_item_feature_factor: 5
+  ems_coord_dim: 6
+  item_feature_dim: 3
+  mask_threshold: 0.5
+  key_count_base: 5
+  key_count_per_layer: 4
+  key_offset_initial: 2
+  flow_input_multiplier: 2
+  flow_output_dim: 1
+  policy_ems_head_key_index: -3
+  policy_item_head_key_index: -2
+  flow_head_key_index: -1
+
+train:
+  seed: 0
+  num_train_steps: 1000
+  num_envs: 64
+  learning_rate: 0.001
+  logz_init: 0.0
+  rng_split_count: 3
+  init_rng_split_count: 4
+
+loss:
+  residual_power: 2
+
+metrics_eval:
+  num_traj: 512
+  batch_size: 128
+  top_k: [10, 50]
+  reward_epsilon: 1.0e-12
+
+checkpointing:
+  every: 200
+  filename_width: 6
+
+logging:
+  every: 50
+  step_width: 5
+  float_precision: 6
+
+artifacts:
+  output_dir: runs

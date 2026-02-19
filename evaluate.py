@@ -43,7 +43,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from env_wrapper import BinPackGFN
-from train import PolicyTransformer
+from training_model import PolicyTransformer
 
 
 def _resolve_device(device_kind: str) -> Any:
@@ -112,6 +112,36 @@ def _build_eval_summary(
             "num_eval_envs": int(eval_args.num_eval_envs),
         },
     }
+
+
+def _resolve_model_config(run_config: dict[str, Any]) -> dict[str, Any]:
+    model_cfg = run_config.get("model")
+    if isinstance(model_cfg, dict):
+        resolved = dict(model_cfg)
+    else:
+        resolved = {}
+
+    if "hidden_dim" in run_config:
+        resolved["hidden_dim"] = int(run_config["hidden_dim"])
+
+    resolved.setdefault("num_layers", 2)
+    resolved.setdefault("num_heads", 4)
+    resolved.setdefault("ff_multiplier", 2)
+    resolved.setdefault("qk_size_min", 1)
+    resolved.setdefault("obs_ems_feature_factor", 7)
+    resolved.setdefault("obs_item_feature_factor", 5)
+    resolved.setdefault("ems_coord_dim", 6)
+    resolved.setdefault("item_feature_dim", 3)
+    resolved.setdefault("mask_threshold", 0.5)
+    resolved.setdefault("key_count_base", 5)
+    resolved.setdefault("key_count_per_layer", 4)
+    resolved.setdefault("key_offset_initial", 2)
+    resolved.setdefault("flow_input_multiplier", 2)
+    resolved.setdefault("flow_output_dim", 1)
+    resolved.setdefault("policy_ems_head_key_index", -3)
+    resolved.setdefault("policy_item_head_key_index", -2)
+    resolved.setdefault("flow_head_key_index", -1)
+    return resolved
 
 
 def parse_args() -> argparse.Namespace:
@@ -187,7 +217,8 @@ def main() -> None:
         max_num_items = int(run_config["max_num_items"])
         max_num_ems = int(run_config["max_num_ems"])
         obs_num_ems = int(run_config["obs_num_ems"])
-        hidden_dim = int(run_config["hidden_dim"])
+        model_cfg = _resolve_model_config(run_config)
+        hidden_dim = int(model_cfg["hidden_dim"])
         beta = float(run_config["beta"])
 
         env = BinPackGFN(
@@ -212,6 +243,23 @@ def main() -> None:
             obs_num_ems=obs_num_ems,
             max_num_items=max_num_items,
             key=model_init_key,
+            num_layers=int(model_cfg["num_layers"]),
+            num_heads=int(model_cfg["num_heads"]),
+            ff_multiplier=int(model_cfg["ff_multiplier"]),
+            qk_size_min=int(model_cfg["qk_size_min"]),
+            obs_ems_feature_factor=int(model_cfg["obs_ems_feature_factor"]),
+            obs_item_feature_factor=int(model_cfg["obs_item_feature_factor"]),
+            ems_coord_dim=int(model_cfg["ems_coord_dim"]),
+            item_feature_dim=int(model_cfg["item_feature_dim"]),
+            mask_threshold=float(model_cfg["mask_threshold"]),
+            key_count_base=int(model_cfg["key_count_base"]),
+            key_count_per_layer=int(model_cfg["key_count_per_layer"]),
+            key_offset_initial=int(model_cfg["key_offset_initial"]),
+            flow_input_multiplier=int(model_cfg["flow_input_multiplier"]),
+            flow_output_dim=int(model_cfg["flow_output_dim"]),
+            policy_ems_head_key_index=int(model_cfg["policy_ems_head_key_index"]),
+            policy_item_head_key_index=int(model_cfg["policy_item_head_key_index"]),
+            flow_head_key_index=int(model_cfg["flow_head_key_index"]),
         )
         model, logZ = eqx.tree_deserialise_leaves(
             checkpoint_path.as_posix(),

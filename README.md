@@ -111,6 +111,15 @@ Then run:
 python train.py --num-train-steps 10 --num-envs 8 --max-num-items 10 --max-num-ems 30 --obs-num-ems 30
 ```
 
+`train.py` now loads numeric defaults from `config.base.yaml` in the repo root.
+CLI flags override values from that config file.
+
+To use a different base config file:
+
+```bash
+python train.py --config /path/to/config.yaml
+```
+
 Training artifacts are saved under `runs/<run-name>/` by default.
 
 Useful options:
@@ -122,7 +131,7 @@ python train.py --num-train-steps 1000 --checkpoint-every 200 --log-every 50 --o
 ### GPU selection (`--device gpu`)
 - `train.py` now sets `CUDA_VISIBLE_DEVICES` **before importing `jax`**.
 - Use `--gpu-id` to choose the physical GPU index to expose to the process.
-- Default GPU index is `FLOW_DEFAULT_GPU_ID` (if set), otherwise `0`.
+- Default GPU selection comes from `config.base.yaml` (`runtime.device` / `runtime.gpu_id`).
 - Example (use physical GPU 1 only):
 
 ```bash

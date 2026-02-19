@@ -14,6 +14,7 @@ dependencies = [
   "chex==0.1.91",
   "equinox==0.13.0",
   "optax==0.2.7",
+  "PyYAML>=6.0",
   "dm-tree==0.1.9",
   "jumanji @ git+https://github.com/instadeepai/jumanji.git@9d335e443433f8f76bb7bd0b7387fef9ffe8a61e",
   "gfnx @ git+https://github.com/d-tiapkin/gfnx.git@4bbd26ae22437a218e69214a917eb039d1c529f4",
@@ -21,7 +22,7 @@ dependencies = [
 ]
 
 [tool.setuptools]
-py-modules = ["env_wrapper", "train"]
+py-modules = ["env_wrapper", "train", "training_config", "training_core", "training_model", "evaluate"]
 
 [tool.ruff]
 line-length = 100

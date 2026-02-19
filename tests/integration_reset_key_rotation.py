@@ -8,7 +8,8 @@ import jax.numpy as jnp
 import optax
 
 from env_wrapper import BinPackGFN
-from train import PolicyMLP, TrainState, make_train_step
+from training_core import TrainState, make_train_step
+from training_model import PolicyMLP
 
 
 class IntegrationResetKeyRotationTest(unittest.TestCase):
@@ -49,7 +50,7 @@ class IntegrationResetKeyRotationTest(unittest.TestCase):
             num_envs=1,
         )
 
-        train_step = make_train_step()
+        train_step = make_train_step(residual_power=2, rng_split_count=3)
 
         state_1, _ = train_step(train_state)
         state_2, _ = train_step(state_1)
