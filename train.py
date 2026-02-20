@@ -141,7 +141,7 @@ def run_training(
     if config.runtime.device == "gpu":
         print(
             f"Using device: {selected_device} "
-            f"(requested={config.runtime.device}, CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')}, gpu_id={config.runtime.gpu_id})"
+            f"(requested={config.runtime.device}, CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')}, gpu_id={config.runtime.gpu_id}, XLA_FLAGS={os.environ.get('XLA_FLAGS')})"
         )
     else:
         print(f"Using device: {selected_device} (requested={config.runtime.device})")

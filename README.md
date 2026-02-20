@@ -150,6 +150,10 @@ python train.py --num-train-steps 1000 --checkpoint-every 200 --log-every 50 --o
 - `train.py` now sets `CUDA_VISIBLE_DEVICES` **before importing `jax`**.
 - Use `--gpu-id` to choose the physical GPU index to expose to the process.
 - Default GPU selection comes from `config.base.yaml` (`runtime.device` / `runtime.gpu_id`).
+- For stability on some driver/toolchain combos, GPU runs default to safe XLA flags:
+   - `--xla_gpu_enable_triton_gemm=false`
+   - `--xla_gpu_autotune_level=0`
+- To opt out (restore default XLA autotuning), set `FLOW_SAFE_GPU_XLA=0`.
 - Example (use physical GPU 1 only):
 
 ```bash

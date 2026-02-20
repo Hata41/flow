@@ -308,6 +308,19 @@ def bootstrap_runtime_from_argv(argv: list[str]) -> tuple[str, int, str]:
 
     if device == "gpu":
         os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        use_safe_gpu_xla = os.environ.get("FLOW_SAFE_GPU_XLA", "1") != "0"
+        if use_safe_gpu_xla:
+            existing_xla_flags = os.environ.get("XLA_FLAGS", "")
+            fallback_xla_flags = [
+                "--xla_gpu_enable_triton_gemm=false",
+                "--xla_gpu_autotune_level=0",
+            ]
+            merged_flags = [existing_xla_flags] if existing_xla_flags else []
+            for flag in fallback_xla_flags:
+                if flag not in existing_xla_flags:
+                    merged_flags.append(flag)
+            if merged_flags:
+                os.environ["XLA_FLAGS"] = " ".join(merged_flags)
 
     return device, gpu_id, str(Path(args.config) if args.config else _workspace_default_config_path())
 
