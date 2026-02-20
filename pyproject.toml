@@ -14,6 +14,7 @@ dependencies = [
   "chex==0.1.91",
   "equinox==0.13.0",
   "optax==0.2.7",
+  "tensorboardX>=2.6.2",
   "PyYAML>=6.0",
   "dm-tree==0.1.9",
   "jumanji @ git+https://github.com/instadeepai/jumanji.git@9d335e443433f8f76bb7bd0b7387fef9ffe8a61e",

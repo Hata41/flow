@@ -122,6 +122,24 @@ python train.py --config /path/to/config.yaml
 
 Training artifacts are saved under `runs/<run-name>/` by default.
 
+TensorBoard logs are also saved per run under:
+
+```bash
+runs/<run-name>/tensorboard/
+```
+
+Launch TensorBoard with `uv`:
+
+```bash
+uv run tensorboard --logdir runs
+```
+
+Or for a single run:
+
+```bash
+uv run tensorboard --logdir runs/<run-name>/tensorboard
+```
+
 Useful options:
 
 ```bash

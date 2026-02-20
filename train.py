@@ -24,6 +24,7 @@ import gfnx
 import jax
 import jax.numpy as jnp
 import optax
+from tensorboardX import SummaryWriter
 
 from env_wrapper import BinPackGFN
 from training_core import action_history_hamming_distance, make_fwd_policy_fn, make_train_step, TrainState
@@ -106,6 +107,7 @@ def run_training(
     checkpoints_dir = run_dir / "checkpoints"
     metrics_path = run_dir / "metrics.csv"
     config_snapshot_path = run_dir / "config.json"
+    tensorboard_dir = run_dir / "tensorboard"
 
     tracked_top_k = config.metrics_eval.top_k[0]
     tracked_reward_key = f"top_{tracked_top_k}_reward"
@@ -225,83 +227,103 @@ def run_training(
             writer = csv.DictWriter(metrics_file, fieldnames=metric_fieldnames)
             writer.writeheader()
 
-            for step in range(config.train.num_train_steps):
-                train_state, metrics = train_step(train_state)
+            tb_writer = SummaryWriter(logdir=str(tensorboard_dir))
+            try:
+                for step in range(config.train.num_train_steps):
+                    train_state, metrics = train_step(train_state)
 
-                top_k_reward: float | None = None
-                top_k_diversity: float | None = None
-                top_k_utilization: float | None = None
-                should_log = (step % config.logging.every == 0) or (step == config.train.num_train_steps - 1)
-                if should_log:
-                    eval_rng_key, next_rng_key = jax.random.split(train_state.rng_key)
-                    train_state = train_state._replace(rng_key=next_rng_key)
-                    current_policy_params, _ = eqx.partition(train_state.model, eqx.is_array)
-                    metrics_state, eval_results = eval_policy_metrics(
-                        metrics_state,
-                        eval_rng_key,
-                        current_policy_params,
-                        train_state.env_params,
-                    )
-                    top_k_reward = float(eval_results[tracked_reward_key])
-                    top_k_diversity = float(eval_results[tracked_diversity_key])
-                    top_k_utilization = float(
-                        jnp.log(jnp.maximum(eval_results[tracked_reward_key], config.metrics_eval.reward_epsilon))
-                        / train_state.env_params.reward_params.beta
-                    )
-
-                row = {
-                    "step": step,
-                    "loss": float(metrics["loss"]),
-                    "mean_utilization": float(metrics["mean_utilization"]),
-                    "mean_terminal_log_reward": float(metrics["mean_terminal_log_reward"]),
-                    "mean_log_pf": float(metrics["mean_log_pf"]),
-                    "mean_log_pb": float(metrics["mean_log_pb"]),
-                    "logZ": float(train_state.logZ),
-                    tracked_reward_key: top_k_reward,
-                    tracked_diversity_key: top_k_diversity,
-                    tracked_utilization_key: top_k_utilization,
-                }
-                writer.writerow({key: _json_safe_value(value) for key, value in row.items()})
-
-                if should_log:
-                    step_width = config.logging.step_width
-                    float_precision = config.logging.float_precision
-                    train_message = (
-                        f"step={step:0{step_width}d} "
-                        f"loss={row['loss']:.{float_precision}f} "
-                        f"mean_utilization={row['mean_utilization']:.{float_precision}f} "
-                        f"mean_terminal_log_reward={row['mean_terminal_log_reward']:.{float_precision}f} "
-                        f"logZ={row['logZ']:.{float_precision}f}"
-                    )
-                    print(_format_train_log(train_message, config.runtime.train_log_color_code))
-                    if top_k_reward is not None and top_k_diversity is not None and top_k_utilization is not None:
-                        eval_message = (
-                            f"step={step:0{step_width}d} "
-                            f"top_{tracked_top_k}_reward={top_k_reward:.{float_precision}f} "
-                            f"top_{tracked_top_k}_diversity={top_k_diversity:.{float_precision}f} "
-                            f"top_{tracked_top_k}_utilization={top_k_utilization:.{float_precision}f}"
+                    top_k_reward: float | None = None
+                    top_k_diversity: float | None = None
+                    top_k_utilization: float | None = None
+                    should_log = (step % config.logging.every == 0) or (step == config.train.num_train_steps - 1)
+                    if should_log:
+                        eval_rng_key, next_rng_key = jax.random.split(train_state.rng_key)
+                        train_state = train_state._replace(rng_key=next_rng_key)
+                        current_policy_params, _ = eqx.partition(train_state.model, eqx.is_array)
+                        metrics_state, eval_results = eval_policy_metrics(
+                            metrics_state,
+                            eval_rng_key,
+                            current_policy_params,
+                            train_state.env_params,
                         )
-                        print(_format_eval_log(eval_message, config.runtime.eval_log_color_code))
+                        top_k_reward = float(eval_results[tracked_reward_key])
+                        top_k_diversity = float(eval_results[tracked_diversity_key])
+                        top_k_utilization = float(
+                            jnp.log(jnp.maximum(eval_results[tracked_reward_key], config.metrics_eval.reward_epsilon))
+                            / train_state.env_params.reward_params.beta
+                        )
 
-                should_checkpoint = (
-                    ((step + 1) % config.checkpointing.every == 0)
-                    or (step == config.train.num_train_steps - 1)
-                )
-                if should_checkpoint:
-                    width = config.checkpointing.filename_width
-                    ckpt_name = f"step_{step + 1:0{width}d}.eqx"
-                    ckpt_path = checkpoints_dir / ckpt_name
-                    _save_checkpoint(ckpt_path, train_state.model, train_state.logZ)
-                    _save_checkpoint(checkpoints_dir / "latest.eqx", train_state.model, train_state.logZ)
-                    _write_json(
-                        checkpoints_dir / "latest.json",
-                        {
-                            "step": step + 1,
-                            "logZ": float(train_state.logZ),
-                            "checkpoint": ckpt_name,
-                        },
-                        indent=config.runtime.json_indent,
+                    row = {
+                        "step": step,
+                        "loss": float(metrics["loss"]),
+                        "mean_utilization": float(metrics["mean_utilization"]),
+                        "mean_terminal_log_reward": float(metrics["mean_terminal_log_reward"]),
+                        "mean_log_pf": float(metrics["mean_log_pf"]),
+                        "mean_log_pb": float(metrics["mean_log_pb"]),
+                        "logZ": float(train_state.logZ),
+                        tracked_reward_key: top_k_reward,
+                        tracked_diversity_key: top_k_diversity,
+                        tracked_utilization_key: top_k_utilization,
+                    }
+                    writer.writerow({key: _json_safe_value(value) for key, value in row.items()})
+
+                    tb_writer.add_scalar("Loss/TB_Loss", row["loss"], step)
+                    tb_writer.add_scalar("GFN/logZ", row["logZ"], step)
+                    tb_writer.add_scalar("GFN/mean_log_pf", row["mean_log_pf"], step)
+                    tb_writer.add_scalar("GFN/mean_log_pb", row["mean_log_pb"], step)
+                    tb_writer.add_scalar("Performance/mean_utilization", row["mean_utilization"], step)
+                    tb_writer.add_scalar(
+                        "Performance/mean_terminal_log_reward",
+                        row["mean_terminal_log_reward"],
+                        step,
                     )
+                    if should_log and top_k_reward is not None and top_k_diversity is not None and top_k_utilization is not None:
+                        tb_writer.add_scalar(f"Eval/top_{tracked_top_k}_reward", top_k_reward, step)
+                        tb_writer.add_scalar(f"Eval/top_{tracked_top_k}_diversity", top_k_diversity, step)
+                        tb_writer.add_scalar(f"Eval/top_{tracked_top_k}_utilization", top_k_utilization, step)
+
+                    if should_log:
+                        step_width = config.logging.step_width
+                        float_precision = config.logging.float_precision
+                        train_message = (
+                            f"step={step:0{step_width}d} "
+                            f"loss={row['loss']:.{float_precision}f} "
+                            f"mean_utilization={row['mean_utilization']:.{float_precision}f} "
+                            f"mean_terminal_log_reward={row['mean_terminal_log_reward']:.{float_precision}f} "
+                            f"logZ={row['logZ']:.{float_precision}f}"
+                        )
+                        print(_format_train_log(train_message, config.runtime.train_log_color_code))
+                        if top_k_reward is not None and top_k_diversity is not None and top_k_utilization is not None:
+                            eval_message = (
+                                f"step={step:0{step_width}d} "
+                                f"top_{tracked_top_k}_reward={top_k_reward:.{float_precision}f} "
+                                f"top_{tracked_top_k}_diversity={top_k_diversity:.{float_precision}f} "
+                                f"top_{tracked_top_k}_utilization={top_k_utilization:.{float_precision}f}"
+                            )
+                            print(_format_eval_log(eval_message, config.runtime.eval_log_color_code))
+
+                    should_checkpoint = (
+                        ((step + 1) % config.checkpointing.every == 0)
+                        or (step == config.train.num_train_steps - 1)
+                    )
+                    if should_checkpoint:
+                        width = config.checkpointing.filename_width
+                        ckpt_name = f"step_{step + 1:0{width}d}.eqx"
+                        ckpt_path = checkpoints_dir / ckpt_name
+                        _save_checkpoint(ckpt_path, train_state.model, train_state.logZ)
+                        _save_checkpoint(checkpoints_dir / "latest.eqx", train_state.model, train_state.logZ)
+                        _write_json(
+                            checkpoints_dir / "latest.json",
+                            {
+                                "step": step + 1,
+                                "logZ": float(train_state.logZ),
+                                "checkpoint": ckpt_name,
+                            },
+                            indent=config.runtime.json_indent,
+                        )
+            finally:
+                tb_writer.flush()
+                tb_writer.close()
 
 
 def parse_args() -> argparse.Namespace:
