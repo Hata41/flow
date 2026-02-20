@@ -64,7 +64,10 @@ class TrainConfig:
 
 @dataclass(frozen=True)
 class LossConfig:
+    objective: str
     residual_power: int
+    subtb_lambda: float
+    subtb_length_weighting: bool
 
 
 @dataclass(frozen=True)
@@ -212,7 +215,10 @@ def _to_training_config(raw: dict[str, Any]) -> TrainingConfig:
             init_rng_split_count=int(train["init_rng_split_count"]),
         ),
         loss=LossConfig(
+            objective=str(loss.get("objective", "tb")).lower(),
             residual_power=int(loss["residual_power"]),
+            subtb_lambda=float(loss.get("subtb_lambda", 0.9)),
+            subtb_length_weighting=bool(loss.get("subtb_length_weighting", False)),
         ),
         metrics_eval=MetricsEvalConfig(
             num_traj=int(metrics_eval["num_traj"]),
@@ -366,6 +372,10 @@ def validate_config(config: TrainingConfig) -> None:
 
     if config.train.learning_rate <= 0:
         raise ValueError("train.learning_rate must be > 0.")
+    if config.loss.objective not in {"tb", "subtb"}:
+        raise ValueError(f"loss.objective must be one of {{'tb', 'subtb'}} (got {config.loss.objective}).")
+    if not (0.0 < config.loss.subtb_lambda <= 1.0):
+        raise ValueError("loss.subtb_lambda must satisfy 0 < subtb_lambda <= 1.")
     if config.env.beta <= 0:
         raise ValueError("env.beta must be > 0.")
     if config.metrics_eval.reward_epsilon <= 0:

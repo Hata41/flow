@@ -213,7 +213,10 @@ def run_training(
         )
 
         train_step = make_train_step(
+            objective=config.loss.objective,
             residual_power=config.loss.residual_power,
+            subtb_lambda=config.loss.subtb_lambda,
+            subtb_length_weighting=config.loss.subtb_length_weighting,
             rng_split_count=config.train.rng_split_count,
         )
         _, eval_policy_static = eqx.partition(model, eqx.is_array)

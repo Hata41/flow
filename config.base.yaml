@@ -7,7 +7,7 @@ runtime:
   json_indent: 2
 
 env:
-  beta: 10.0
+  beta: 1000.0
   max_num_items: 20
   max_num_ems: 40
   obs_num_ems: 40
@@ -43,7 +43,14 @@ train:
   init_rng_split_count: 4
 
 loss:
+  # Loss objective options: "tb" (Trajectory Balance) or "subtb" (Sub-Trajectory Balance)
+  objective: subtb
+  # Residual exponent applied to both TB and SubTB residuals (typical: 1 or 2)
   residual_power: 2
+  # SubTB only: geometric weighting factor for sub-trajectories by length (0 < subtb_lambda <= 1)
+  subtb_lambda: 0.9
+  # SubTB only: if true, multiply weights by sub-trajectory length in addition to lambda weighting
+  subtb_length_weighting: false
 
 metrics_eval:
   num_traj: 512
