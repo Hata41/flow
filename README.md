@@ -102,7 +102,7 @@ uv venv --python 3.12
 source .venv/bin/activate
 uv pip install --index-strategy unsafe-best-match git+https://github.com/instadeepai/jumanji.git@main
 uv pip install --index-strategy unsafe-best-match --no-deps git+https://github.com/d-tiapkin/gfnx.git@main
-uv pip install --index-strategy unsafe-best-match equinox optax jaxtyping flashbax omegaconf networkx
+uv pip install --index-strategy unsafe-best-match equinox optax jaxtyping flashbax omegaconf networkx tensorboard setuptools==80.9.0
 ```
 
 Then run:
@@ -139,6 +139,19 @@ Or for a single run:
 ```bash
 uv run tensorboard --logdir runs/<run-name>/tensorboard
 ```
+
+Troubleshooting note:
+- If you see a warning about `pkg_resources` deprecation when launching TensorBoard, this is expected with current TensorBoard versions.
+- This workspace pins `setuptools==80.9.0` so `pkg_resources` is available and TensorBoard launches correctly.
+
+TensorBoard eval metrics:
+- Scalar: `Eval/top_<k>_utilization` where `k = metrics_eval.top_k[0]` (default: `10`), i.e. mean utilization of top-k eval samples.
+- Histogram: `Eval/utilization_hist` (distribution of per-eval rollout utilizations; bounded in `[0, 1]`).
+
+TensorBoard performance metrics:
+- Scalar: `Performance/elapsed_seconds` (wall-clock seconds since training loop start).
+- Scalar: `Performance/train_steps_per_sec` (instantaneous optimizer update steps per second for the latest step).
+- Scalar: `Performance/env_steps_per_sec` (instantaneous environment transitions per second for the latest step, accounting for `num_envs`).
 
 Useful options:
 

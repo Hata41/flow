@@ -202,7 +202,7 @@ class BinPackGFN(BaseVecEnvironment[GFNBinPackState, BinPackEnvParams]):
                 item_feats.reshape(-1),
                 jstate.items_mask.astype(jnp.float32),
                 jstate.items_placed.astype(jnp.float32),
-                jstate.action_mask[: self.obs_num_ems].astype(jnp.float32).reshape(-1),
+                jstate.action_mask[obs_ems_indices].astype(jnp.float32).reshape(-1),
             ],
             axis=0,
         )
@@ -348,7 +348,8 @@ class BinPackGFN(BaseVecEnvironment[GFNBinPackState, BinPackEnvParams]):
         del env_params
 
         def _single_invalid(single_state: GFNBinPackState) -> chex.Array:
-            valid_flat = single_state.jumanji_state.action_mask.reshape(-1)
+            obs_ems_indices = single_state.jumanji_state.sorted_ems_indexes[: self.obs_num_ems]
+            valid_flat = single_state.jumanji_state.action_mask[obs_ems_indices].reshape(-1)
             invalid_flat = jnp.logical_not(valid_flat)
             chex.assert_shape(invalid_flat, (self._n_actions,))
             return invalid_flat

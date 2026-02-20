@@ -5,6 +5,7 @@ import csv
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -93,6 +94,24 @@ def _format_eval_log(message: str, eval_log_color_code: int) -> str:
     return _colorize(f"[eval]  {message}", eval_log_color_code)
 
 
+def _table_header(columns: list[tuple[str, int]]) -> str:
+    return " ".join(f"{name:>{width}}" for name, width in columns)
+
+
+def _table_separator(columns: list[tuple[str, int]]) -> str:
+    return " ".join("-" * width for _, width in columns)
+
+
+def _table_cell(value: Any, width: int, precision: int) -> str:
+    if value is None:
+        return " " * width
+    if isinstance(value, int):
+        return f"{value:>{width}d}"
+    if isinstance(value, float):
+        return f"{value:>{width}.{precision}f}"
+    return f"{str(value):>{width}}"
+
+
 def run_training(
     config: TrainingConfig,
     *,
@@ -126,6 +145,9 @@ def run_training(
 
     metric_fieldnames = [
         "step",
+        "elapsed_seconds",
+        "train_steps_per_sec",
+        "env_steps_per_sec",
         "loss",
         "mean_utilization",
         "mean_terminal_log_reward",
@@ -223,38 +245,79 @@ def run_training(
             )
             return next_metrics_state, metrics_module.get(next_metrics_state)
 
+        @jax.jit
+        def eval_utilization_samples(
+            rng_key: chex.PRNGKey,
+            current_policy_params: Any,
+            current_env_params: Any,
+        ) -> chex.Array:
+            _, rollout_info = gfnx.utils.forward_rollout(
+                rng_key=rng_key,
+                num_envs=config.metrics_eval.num_traj,
+                policy_fn=eval_fwd_policy_fn,
+                policy_params=current_policy_params,
+                env=env,
+                env_params=current_env_params,
+            )
+            return rollout_info["final_env_state"].volume_utilization
+
         with metrics_path.open("w", newline="", encoding="utf-8") as metrics_file:
             writer = csv.DictWriter(metrics_file, fieldnames=metric_fieldnames)
             writer.writeheader()
 
             tb_writer = SummaryWriter(logdir=str(tensorboard_dir))
+            start_time = time.perf_counter()
+            prev_step_time = start_time
+            table_columns = [
+                ("step", 7),
+                ("steps_s", 10),
+                ("env_steps_s", 12),
+                ("train_util", 10),
+                (f"top_{tracked_top_k}_util", 12),
+            ]
+            table_header_printed = False
             try:
                 for step in range(config.train.num_train_steps):
                     train_state, metrics = train_step(train_state)
 
+                    now = time.perf_counter()
+                    elapsed_seconds = max(now - start_time, 1e-9)
+                    step_duration_seconds = max(now - prev_step_time, 1e-9)
+                    prev_step_time = now
+                    train_steps_per_sec = 1.0 / step_duration_seconds
+                    env_steps_per_sec = config.train.num_envs / step_duration_seconds
+
                     top_k_reward: float | None = None
                     top_k_diversity: float | None = None
                     top_k_utilization: float | None = None
+                    eval_utilization_samples_host: Any = None
                     should_log = (step % config.logging.every == 0) or (step == config.train.num_train_steps - 1)
                     if should_log:
-                        eval_rng_key, next_rng_key = jax.random.split(train_state.rng_key)
+                        eval_rng_key_metrics, eval_rng_key_util, next_rng_key = jax.random.split(train_state.rng_key, 3)
                         train_state = train_state._replace(rng_key=next_rng_key)
                         current_policy_params, _ = eqx.partition(train_state.model, eqx.is_array)
                         metrics_state, eval_results = eval_policy_metrics(
                             metrics_state,
-                            eval_rng_key,
+                            eval_rng_key_metrics,
                             current_policy_params,
                             train_state.env_params,
                         )
                         top_k_reward = float(eval_results[tracked_reward_key])
                         top_k_diversity = float(eval_results[tracked_diversity_key])
-                        top_k_utilization = float(
-                            jnp.log(jnp.maximum(eval_results[tracked_reward_key], config.metrics_eval.reward_epsilon))
-                            / train_state.env_params.reward_params.beta
+                        eval_util_samples = eval_utilization_samples(
+                            eval_rng_key_util,
+                            current_policy_params,
+                            train_state.env_params,
                         )
+                        sorted_utilization = jnp.sort(eval_util_samples)
+                        top_k_utilization = float(jnp.mean(sorted_utilization[-tracked_top_k:]))
+                        eval_utilization_samples_host = jax.device_get(eval_util_samples)
 
                     row = {
                         "step": step,
+                        "elapsed_seconds": elapsed_seconds,
+                        "train_steps_per_sec": train_steps_per_sec,
+                        "env_steps_per_sec": env_steps_per_sec,
                         "loss": float(metrics["loss"]),
                         "mean_utilization": float(metrics["mean_utilization"]),
                         "mean_terminal_log_reward": float(metrics["mean_terminal_log_reward"]),
@@ -272,6 +335,9 @@ def run_training(
                     tb_writer.add_scalar("GFN/mean_log_pf", row["mean_log_pf"], step)
                     tb_writer.add_scalar("GFN/mean_log_pb", row["mean_log_pb"], step)
                     tb_writer.add_scalar("Performance/mean_utilization", row["mean_utilization"], step)
+                    tb_writer.add_scalar("Performance/elapsed_seconds", row["elapsed_seconds"], step)
+                    tb_writer.add_scalar("Performance/train_steps_per_sec", row["train_steps_per_sec"], step)
+                    tb_writer.add_scalar("Performance/env_steps_per_sec", row["env_steps_per_sec"], step)
                     tb_writer.add_scalar(
                         "Performance/mean_terminal_log_reward",
                         row["mean_terminal_log_reward"],
@@ -281,26 +347,25 @@ def run_training(
                         tb_writer.add_scalar(f"Eval/top_{tracked_top_k}_reward", top_k_reward, step)
                         tb_writer.add_scalar(f"Eval/top_{tracked_top_k}_diversity", top_k_diversity, step)
                         tb_writer.add_scalar(f"Eval/top_{tracked_top_k}_utilization", top_k_utilization, step)
+                        if eval_utilization_samples_host is not None:
+                            tb_writer.add_histogram("Eval/utilization_hist", eval_utilization_samples_host, step)
 
                     if should_log:
-                        step_width = config.logging.step_width
-                        float_precision = config.logging.float_precision
-                        train_message = (
-                            f"step={step:0{step_width}d} "
-                            f"loss={row['loss']:.{float_precision}f} "
-                            f"mean_utilization={row['mean_utilization']:.{float_precision}f} "
-                            f"mean_terminal_log_reward={row['mean_terminal_log_reward']:.{float_precision}f} "
-                            f"logZ={row['logZ']:.{float_precision}f}"
-                        )
-                        print(_format_train_log(train_message, config.runtime.train_log_color_code))
-                        if top_k_reward is not None and top_k_diversity is not None and top_k_utilization is not None:
-                            eval_message = (
-                                f"step={step:0{step_width}d} "
-                                f"top_{tracked_top_k}_reward={top_k_reward:.{float_precision}f} "
-                                f"top_{tracked_top_k}_diversity={top_k_diversity:.{float_precision}f} "
-                                f"top_{tracked_top_k}_utilization={top_k_utilization:.{float_precision}f}"
-                            )
-                            print(_format_eval_log(eval_message, config.runtime.eval_log_color_code))
+                        float_precision = 2
+                        if not table_header_printed:
+                            print(_format_train_log(_table_header(table_columns), config.runtime.train_log_color_code))
+                            print(_format_train_log(_table_separator(table_columns), config.runtime.train_log_color_code))
+                            table_header_printed = True
+
+                        row_cells = [
+                            _table_cell(step, 7, float_precision),
+                            _table_cell(row["train_steps_per_sec"], 10, float_precision),
+                            _table_cell(row["env_steps_per_sec"], 12, float_precision),
+                            _table_cell(row["mean_utilization"], 10, float_precision),
+                            _table_cell(top_k_utilization, 12, float_precision),
+                        ]
+                        table_row = " ".join(row_cells)
+                        print(_format_train_log(table_row, config.runtime.train_log_color_code))
 
                     should_checkpoint = (
                         ((step + 1) % config.checkpointing.every == 0)

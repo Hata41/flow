@@ -298,7 +298,7 @@ def main() -> None:
                 env_params=rollout_env_params,
             )
 
-            batch_util = jax.device_get(rollout_info["log_gfn_reward"] / rollout_env_params.reward_params.beta)
+            batch_util = jax.device_get(rollout_info["final_env_state"].volume_utilization)
             final_state = rollout_info["final_env_state"]
             batch_action_history = jax.device_get(final_state.action_history)
             batch_step_count = jax.device_get(final_state.step_count)

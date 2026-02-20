@@ -37,13 +37,25 @@ def trajectory_balance_loss(
     terminal_log_reward = rollout_info["log_gfn_reward"]
 
     residual = logZ + log_pf_traj - log_pb_traj - terminal_log_reward
-    loss = jnp.mean(jnp.power(residual, residual_power))
+    finite_mask = (
+        jnp.isfinite(log_pf_traj)
+        & jnp.isfinite(log_pb_traj)
+        & jnp.isfinite(terminal_log_reward)
+        & jnp.isfinite(residual)
+    )
+    safe_count = jnp.maximum(jnp.sum(finite_mask), 1)
+    residual_powered = jnp.power(jnp.where(finite_mask, residual, 0.0), residual_power)
+    loss = jnp.sum(residual_powered) / safe_count
+
+    def _masked_mean(values: chex.Array) -> chex.Array:
+        return jnp.sum(jnp.where(finite_mask, values, 0.0)) / safe_count
+
     metrics = {
         "loss": loss,
-        "mean_terminal_log_reward": jnp.mean(terminal_log_reward),
-        "mean_log_pf": jnp.mean(log_pf_traj),
-        "mean_log_pb": jnp.mean(log_pb_traj),
-        "mean_utilization": jnp.mean(terminal_log_reward / env_params.reward_params.beta),
+        "mean_terminal_log_reward": _masked_mean(terminal_log_reward),
+        "mean_log_pf": _masked_mean(log_pf_traj),
+        "mean_log_pb": _masked_mean(log_pb_traj),
+        "mean_utilization": _masked_mean(terminal_log_reward / env_params.reward_params.beta),
     }
     return loss, metrics
 
